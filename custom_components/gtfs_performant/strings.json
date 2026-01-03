@@ -74,7 +74,13 @@
       },
       "final_processing": {
         "title": "Setup Complete!",
-        "description": "## Configuration Summary for \"{name}\"\n\n**Selected {selected_stops_count} stops total**\n\n### Stop Groups ({groups_count}):\n{groups_list}\n\n### Individual Stops:\n{ungrouped_list}\n\n### Routes:\nMonitoring {selected_routes_count} routes (0 = all routes)\n\n---\nClick **Submit** to create sensors for your stops."
+        "description": "## Configuration Summary for \"{name}\"\n\n**Selected {selected_stops_count} stops total**\n\n### Stop Groups ({groups_count}):\n{groups_list}\n\n### Individual Stops:\n{ungrouped_list}\n\n### Routes:\nMonitoring {selected_routes_count} routes (0 = all routes)\n\n---\nSelect how often to update departure data, then click **Submit** to create sensors.",
+        "data": {
+          "update_interval": "Update Interval"
+        },
+        "data_description": {
+          "update_interval": "How often to fetch departure updates"
+        }
       }
     },
     "error": {

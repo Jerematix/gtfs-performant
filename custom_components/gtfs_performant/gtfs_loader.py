@@ -203,14 +203,20 @@ class GTFSLoader:
         _LOGGER.info("Loaded %d routes", len(selected))
 
     async def _load_trips(self) -> None:
-        """Load only trips that serve our stops."""
+        """Load only trips that serve our stops, with destination from final stop."""
         rows = self._open_csv('trips.txt')
         if not rows:
             return
 
+        # Get final stop names for trips without headsign
+        final_stops = self._get_final_stop_names()
+        _LOGGER.info("Found %d final stop destinations", len(final_stops))
+
         selected = [r for r in rows if r.get('trip_id') in self._discovered_trips]
         for row in selected:
-            row.setdefault('trip_headsign', '')
+            # Use headsign if available, otherwise use final stop name
+            if not row.get('trip_headsign'):
+                row['trip_headsign'] = final_stops.get(row.get('trip_id'), '')
             row.setdefault('trip_short_name', '')
             row.setdefault('direction_id', '')
             row.setdefault('block_id', '')
@@ -228,6 +234,42 @@ class GTFSLoader:
                  'wheelchair_accessible', 'bikes_allowed'], batch)
 
         _LOGGER.info("Loaded %d trips", len(selected))
+
+    def _get_final_stop_names(self) -> dict:
+        """Get the final stop name for each trip (used as destination)."""
+        if not self._gtfs_data:
+            return {}
+
+        # First, load all stop names
+        stop_names = {}
+        stops_data = self._open_csv('stops.txt')
+        if stops_data:
+            for row in stops_data:
+                stop_names[row.get('stop_id')] = row.get('stop_name', '')
+
+        # Find the final stop for each of our discovered trips
+        self._gtfs_data.seek(0)
+        trip_final_stops = {}  # trip_id -> (max_sequence, stop_id)
+
+        try:
+            with zipfile.ZipFile(self._gtfs_data) as zf:
+                with zf.open('stop_times.txt') as f:
+                    reader = csv.DictReader(StringIO(f.read().decode('utf-8-sig')))
+                    for row in reader:
+                        trip_id = row.get('trip_id')
+                        if trip_id in self._discovered_trips:
+                            seq = int(row.get('stop_sequence', 0))
+                            current = trip_final_stops.get(trip_id, (-1, ''))
+                            if seq > current[0]:
+                                trip_final_stops[trip_id] = (seq, row.get('stop_id'))
+        except Exception as e:
+            _LOGGER.warning("Error finding final stops: %s", e)
+
+        # Convert to trip_id -> stop_name
+        return {
+            trip_id: stop_names.get(stop_id, '')
+            for trip_id, (_, stop_id) in trip_final_stops.items()
+        }
 
     async def _load_stop_times(self) -> None:
         """Load stop_times for selected stops only - streaming."""

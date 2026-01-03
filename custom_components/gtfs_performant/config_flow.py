@@ -305,8 +305,11 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_final_processing(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
-        """Step 6: Show summary and create entry."""
+        """Step 6: Show summary, configure update interval, and create entry."""
         if user_input is not None:
+            # Get the update interval (default 30 seconds)
+            update_interval = int(user_input.get("update_interval", "30"))
+
             # Create the config entry
             config_data = {
                 "static_url": self.gtfs_data["static_url"],
@@ -315,6 +318,7 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "selected_stops": self.selected_stops,
                 "selected_routes": list(self.selected_routes) if self.selected_routes else [],
                 "stop_groups": self.stop_groups,
+                "update_interval": update_interval,
             }
 
             return self.async_create_entry(
@@ -351,10 +355,23 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         else:
             ungrouped_list = "None (all stops are grouped)"
 
-        # Show summary
+        # Show summary with update interval selector
         return self.async_show_form(
             step_id="final_processing",
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema({
+                vol.Required("update_interval", default="120"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            {"value": "15", "label": "15 seconds (fastest)"},
+                            {"value": "30", "label": "30 seconds"},
+                            {"value": "60", "label": "1 minute"},
+                            {"value": "120", "label": "2 minutes (recommended)"},
+                            {"value": "300", "label": "5 minutes (lowest load)"},
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }),
             description_placeholders={
                 "name": self.gtfs_data["name"],
                 "selected_stops_count": len(self.selected_stops),

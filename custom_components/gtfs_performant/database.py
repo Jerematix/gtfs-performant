@@ -265,7 +265,7 @@ class GTFSDatabase:
         today_date = now.strftime("%Y%m%d")
 
         # Query scheduled departures for today
-        # First try with calendar, fall back to just stop_times if no calendar
+        # trip_headsign is populated with final stop name during GTFS import if not provided
         await cursor.execute(f"""
             SELECT DISTINCT
                 st.trip_id,
@@ -273,7 +273,11 @@ class GTFSDatabase:
                 r.route_short_name,
                 r.route_long_name,
                 r.route_color,
-                t.trip_headsign,
+                COALESCE(
+                    NULLIF(st.stop_headsign, ''),
+                    NULLIF(t.trip_headsign, ''),
+                    NULLIF(r.route_long_name, '')
+                ) as trip_headsign,
                 t.direction_id,
                 st.departure_time as scheduled_arrival,
                 st.departure_time as scheduled_departure,

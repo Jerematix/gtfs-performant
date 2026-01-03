@@ -3,6 +3,9 @@ import asyncio
 from datetime import timedelta
 import logging
 import json
+import re
+import shutil
+import unicodedata
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -18,112 +21,71 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "gtfs_performant"
 PLATFORMS = ["sensor"]
 
-SCAN_INTERVAL = timedelta(seconds=30)
+DEFAULT_SCAN_INTERVAL = 120  # seconds (2 minutes)
+CARD_JS = "gtfs-departures-card.js"
 
 
-async def _create_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Create a Lovelace dashboard for GTFS departures."""
+def _slugify(text: str) -> str:
+    """Convert text to a slug matching Home Assistant's entity_id format."""
+    # Normalize unicode and remove accents
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    # Convert to lowercase
+    text = text.lower()
+    # Replace non-alphanumeric with underscores
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    # Remove leading/trailing underscores
+    text = text.strip("_")
+    return text
+
+
+async def _register_card(hass: HomeAssistant) -> None:
+    """Register the custom GTFS departures card."""
     try:
-        # Get stop groups and stops info
-        stop_groups = entry.data.get("stop_groups", [])
-        selected_stops = entry.data.get("selected_stops", [])
-        entry_name = entry.data.get("name", "GTFS Transit")
+        # Source path (in custom_components)
+        src = Path(__file__).parent / "www" / CARD_JS
+        if not src.exists():
+            _LOGGER.warning("Card JS not found at %s", src)
+            return
 
-        # Build cards for each sensor
-        cards = []
+        # Destination path (HA www folder)
+        www_dir = Path(hass.config.path("www"))
+        www_dir.mkdir(parents=True, exist_ok=True)
+        dst = www_dir / CARD_JS
 
-        # Header card
-        cards.append({
-            "type": "markdown",
-            "content": f"# 🚌 {entry_name} Departures\nReal-time transit departures updated every 30 seconds."
-        })
+        # Copy the card file
+        shutil.copy2(src, dst)
+        _LOGGER.info("Copied GTFS card to %s", dst)
 
-        # Create cards for stop groups
-        grouped_stop_ids = set()
-        for group in stop_groups:
-            group_name = group.get("name", "Unknown")
-            group_stops = group.get("stops", [])
-            grouped_stop_ids.update(group_stops)
+        # Register as Lovelace resource
+        url = f"/local/{CARD_JS}"
 
-            # Sensor entity_id format - sanitize name
-            safe_name = group_name.lower()
-            for char in [' ', '.', '-', '/', '(', ')', 'ä', 'ö', 'ü', 'ß']:
-                safe_name = safe_name.replace(char, '_')
-            entity_id = f"sensor.{safe_name}"
+        # Check if already registered via storage
+        storage_path = Path(hass.config.path(".storage/lovelace_resources"))
+        resources_data = {"version": 1, "minor_version": 1, "key": "lovelace_resources", "data": {"items": []}}
 
-            cards.append({
-                "type": "markdown",
-                "title": f"🚏 {group_name}",
-                "content": f"{{{{{{ state_attr('{entity_id}', 'departures_markdown') }}}}}}"
-            })
+        if storage_path.exists():
+            with open(storage_path, "r") as f:
+                resources_data = json.load(f)
 
-        # Create cards for ungrouped stops
-        for stop_id in selected_stops:
-            if stop_id not in grouped_stop_ids:
-                entity_id = f"sensor.stop_{stop_id}"
-                cards.append({
-                    "type": "markdown",
-                    "title": f"🚏 Stop {stop_id}",
-                    "content": f"{{{{{{ state_attr('{entity_id}', 'departures_markdown') }}}}}}"
-                })
+        items = resources_data.get("data", {}).get("items", [])
+        already_registered = any(r.get("url") == url for r in items)
 
-        # Create the dashboard configuration
-        dashboard_config = {
-            "title": "Transit Departures",
-            "views": [{
-                "title": "Departures",
-                "path": "departures",
-                "icon": "mdi:bus-clock",
-                "cards": cards
-            }]
-        }
-
-        # Save to .storage for Lovelace
-        storage_path = Path(hass.config.path(".storage"))
-        storage_path.mkdir(parents=True, exist_ok=True)
-
-        # 1. Save the dashboard config
-        dashboard_file = storage_path / "lovelace.gtfs_departures"
-        dashboard_data = {
-            "version": 1,
-            "minor_version": 1,
-            "key": "lovelace.gtfs_departures",
-            "data": {"config": dashboard_config}
-        }
-        with open(dashboard_file, "w") as f:
-            json.dump(dashboard_data, f, indent=2)
-
-        # 2. Register the dashboard in lovelace_dashboards
-        dashboards_file = storage_path / "lovelace_dashboards"
-        dashboards_data = {"version": 1, "minor_version": 1, "key": "lovelace_dashboards", "data": {"items": []}}
-
-        if dashboards_file.exists():
-            with open(dashboards_file, "r") as f:
-                dashboards_data = json.load(f)
-
-        # Check if our dashboard already exists
-        items = dashboards_data.get("data", {}).get("items", [])
-        dashboard_exists = any(d.get("url_path") == "gtfs-departures" for d in items)
-
-        if not dashboard_exists:
+        if not already_registered:
             items.append({
-                "id": "gtfs_departures",
-                "url_path": "gtfs-departures",
-                "mode": "storage",
-                "require_admin": False,
-                "show_in_sidebar": True,
-                "icon": "mdi:bus-clock",
-                "title": "Transit"
+                "id": "gtfs_departures_card",
+                "type": "module",
+                "url": url
             })
-            dashboards_data["data"]["items"] = items
+            resources_data["data"]["items"] = items
 
-            with open(dashboards_file, "w") as f:
-                json.dump(dashboards_data, f, indent=2)
+            with open(storage_path, "w") as f:
+                json.dump(resources_data, f, indent=2)
 
-        _LOGGER.info("Created GTFS departures dashboard - restart HA to see it in sidebar")
+            _LOGGER.info("Registered GTFS card as Lovelace resource")
 
     except Exception as err:
-        _LOGGER.warning("Could not create dashboard: %s", err)
+        _LOGGER.warning("Could not register card: %s", err)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -170,8 +132,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Create dashboard for easy access
-    await _create_dashboard(hass, entry)
+    # Register custom card
+    await _register_card(hass)
 
     return True
 
@@ -198,11 +160,13 @@ class GTFSDataUpdateCoordinator(DataUpdateCoordinator):
         realtime_handler: GTFSRealtimeHandler,
     ) -> None:
         """Initialize the coordinator."""
+        # Get update interval from config or use default
+        update_interval_seconds = entry.data.get("update_interval", DEFAULT_SCAN_INTERVAL)
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=SCAN_INTERVAL,
+            update_interval=timedelta(seconds=update_interval_seconds),
         )
         self.entry = entry
         self.database = database

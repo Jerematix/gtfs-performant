@@ -79,6 +79,61 @@ Each departure sensor provides:
 - **departure_N_delay_minutes**: Delay in minutes
 - **departure_N_vehicle_id**: Vehicle identifier
 
+## 🎨 Custom Lovelace Card
+
+The integration includes a beautiful custom card for displaying departures.
+
+### Adding the Card (YAML Method - Recommended)
+
+1. Edit your dashboard and click **Add Card**
+2. Scroll down and click **Manual** or **Show code editor**
+3. Paste this configuration:
+
+```yaml
+type: custom:gtfs-departures-card
+entity: sensor.YOUR_STOP_NAME
+title: My Transit Stop
+max_items: 10
+```
+
+### Finding Your Entity ID
+
+Your sensor entity ID can be found in:
+- **Settings → Devices & Services → Entities** (search for your stop name)
+- **Developer Tools → States** (filter by "sensor.")
+
+Entity IDs are lowercase with underscores, e.g., `sensor.koln_sulz_weisshausstr`
+
+### Card Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `entity` | string | **required** | The sensor entity ID |
+| `title` | string | Entity name | Custom title for the card |
+| `max_items` | number | 8 | Maximum departures to show (1-20) |
+
+### Example Configurations
+
+**Basic:**
+```yaml
+type: custom:gtfs-departures-card
+entity: sensor.main_street_station
+```
+
+**Customized:**
+```yaml
+type: custom:gtfs-departures-card
+entity: sensor.koln_hbf
+title: Köln Hbf
+max_items: 5
+```
+
+### Visual Card Picker
+
+The card also appears in the visual card picker as "GTFS Departures". If the dropdown doesn't appear:
+1. Clear your browser cache (Ctrl+Shift+R or Cmd+Shift+R)
+2. Use the YAML method above instead
+
 ## 🖥️ Performance on Raspberry Pi
 
 This integration is specifically optimized for Raspberry Pi hardware:
@@ -100,9 +155,29 @@ Add, remove, or group stops dynamically
 
 ## 🐛 Troubleshooting
 
+### Card Shows "Entity not found"
+- Verify the entity ID is correct in **Developer Tools → States**
+- Entity IDs are lowercase with underscores (e.g., `sensor.koln_sulz_weisshausstr`)
+- Make sure you're using the exact entity ID, not the friendly name
+
+### Card Editor Shows No Dropdown
+- This is a known issue with some Home Assistant versions
+- **Solution**: Use YAML mode instead (click "Show code editor" in the card dialog)
+- Clear browser cache (Ctrl+Shift+R) and try again
+
+### No Departures Showing
+- Check that the current time is within the GTFS schedule dates
+- Verify stops were selected during setup
+- Check Home Assistant logs for errors
+
+### Destinations Show as "Unknown"
+- Some GTFS feeds don't include headsign/destination data
+- The integration automatically infers destinations from the final stop of each trip
+- To refresh: Delete and re-add the integration to reload GTFS data with destination inference
+
 ### Large Dataset Performance
 If you experience performance issues with very large datasets:
-1. Reduce the update interval in options
+1. Reduce the update interval in options (2 minutes recommended)
 2. Select only specific stops you need
 3. Use stop grouping to reduce duplicate processing
 
