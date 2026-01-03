@@ -28,13 +28,28 @@ class GTFSLoader:
         self._gtfs_data: Optional[BytesIO] = None
         self._discovered_trips: Set[str] = set()
 
-    async def async_load_gtfs_data(self) -> None:
-        """Load GTFS data efficiently - single download, selective processing."""
+    async def async_load_gtfs_data(self, force_reload: bool = False) -> None:
+        """Load GTFS data efficiently - single download, selective processing.
+
+        Args:
+            force_reload: If True, force a full reload even if data exists
+        """
         if not self.selected_stops:
             _LOGGER.warning("No stops selected - skipping GTFS load")
             return
 
+        # Check if we can skip loading
+        if not force_reload:
+            needs_load = await self.database.needs_full_load(self.static_url, list(self.selected_stops))
+            if not needs_load:
+                _LOGGER.info("Database already has valid data for this GTFS source - skipping load")
+                return
+
         _LOGGER.info("Starting optimized GTFS load for %d stops...", len(self.selected_stops))
+
+        # Clear existing data if reloading
+        if force_reload:
+            await self._clear_database()
 
         # Step 1: Download GTFS file ONCE
         await self._download_gtfs()
@@ -58,7 +73,23 @@ class GTFSLoader:
         # Step 6: Load stop_times for our stops only
         await self._load_stop_times()
 
+        # Store metadata to avoid reload on next startup
+        await self.database.store_metadata(self.static_url)
+
         _LOGGER.info("GTFS load complete! %d trips serving your stops.", len(self._discovered_trips))
+
+    async def _clear_database(self) -> None:
+        """Clear existing GTFS data from database."""
+        cursor = await self.database._connection.cursor()
+        await cursor.execute("DELETE FROM stop_times")
+        await cursor.execute("DELETE FROM trips")
+        await cursor.execute("DELETE FROM routes")
+        await cursor.execute("DELETE FROM stops")
+        await cursor.execute("DELETE FROM calendar")
+        await cursor.execute("DELETE FROM agency")
+        await cursor.execute("DELETE FROM realtime_updates")
+        await self.database._connection.commit()
+        _LOGGER.info("Cleared existing database data")
 
     async def _download_gtfs(self) -> None:
         """Download GTFS file once."""

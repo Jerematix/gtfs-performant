@@ -21,6 +21,61 @@ class GTFSDatabase:
         self._connection = await aiosqlite.connect(self.db_path)
         await self._create_schema()
         await self._create_indexes()
+
+    async def is_data_loaded(self, static_url: str) -> bool:
+        """Check if database has valid data for the given GTFS URL."""
+        cursor = await self._connection.cursor()
+        await cursor.execute("""
+            SELECT config_value FROM user_config WHERE config_key = 'gtfs_url'
+        """)
+        result = await cursor.fetchone()
+        if not result:
+            return False
+
+        stored_url = result[0]
+        # Check if URL matches
+        if stored_url != static_url:
+            return False
+
+        # Check if we have actual data
+        await cursor.execute("SELECT COUNT(*) FROM stops")
+        stop_count = await cursor.fetchone()
+
+        await cursor.execute("SELECT COUNT(*) FROM stop_times")
+        stop_times_count = await cursor.fetchone()
+
+        return stop_count[0] > 0 and stop_times_count[0] > 0
+
+    async def store_metadata(self, static_url: str) -> None:
+        """Store metadata about the loaded GTFS data."""
+        cursor = await self._connection.cursor()
+        await cursor.execute("""
+            INSERT OR REPLACE INTO user_config (config_key, config_value)
+            VALUES ('gtfs_url', ?)
+        """, (static_url,))
+        await self._connection.commit()
+
+    async def needs_full_load(self, static_url: str, selected_stops: list[str]) -> bool:
+        """Check if we need to do a full GTFS load."""
+        # Check if URL matches
+        if not await self.is_data_loaded(static_url):
+            return True
+
+        # Check if all selected stops are in the database
+        if selected_stops:
+            cursor = await self._connection.cursor()
+            placeholders = ",".join("?" * len(selected_stops))
+            await cursor.execute(f"""
+                SELECT COUNT(DISTINCT stop_id) FROM stops
+                WHERE stop_id IN ({placeholders})
+            """, selected_stops)
+            result = await cursor.fetchone()
+            stored_stop_count = result[0] if result else 0
+
+            if stored_stop_count != len(selected_stops):
+                return True
+
+        return False
     
     async def _create_schema(self) -> None:
         """Create database schema optimized for GTFS queries."""

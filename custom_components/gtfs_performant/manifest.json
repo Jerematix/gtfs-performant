@@ -8,5 +8,12 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/jerematix/gtfs-performant/issues",
   "requirements": ["aiohttp>=3.9.0", "aiosqlite>=0.19.0"],
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "resources": [
+    {
+      "name": "gtfs-departures-card.js",
+      "url": "/hacsfiles/gtfs-performant/gtfs-departures-card.js",
+      "type": "module"
+    }
+  ]
 }
