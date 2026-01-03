@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  gtfs-performant-dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ../:/workspaces/gtfs-performant:cached
+      - /var/run/docker.sock:/var/run/docker.sock:cached
+      - ha-config:/homeassistant/.homeassistant
+    network_mode: host
+    command: sleep infinity
+    environment:
+      - DEVELOPMENT=1
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - HOMEASSISTANT_CONFIG=/homeassistant/.homeassistant
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:latest
+    container_name: gtfs-performant-ha
+    volumes:
+      - ha-config:/config
+      - ../custom_components/gtfs_performant:/config/custom_components/gtfs_performant:ro
+    environment:
+      - TZ=Europe/Berlin
+    ports:
+      - "8123:8123"
+    restart: unless-stopped
+
+volumes:
+  ha-config:

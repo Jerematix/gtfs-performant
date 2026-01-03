@@ -2,46 +2,91 @@
   "config": {
     "step": {
       "user": {
-        "title": "GTFS Performant Setup",
-        "description": "Configure your GTFS transit data sources",
+        "title": "GTFS Setup",
+        "description": "Enter your GTFS data source URLs",
         "data": {
           "static_url": "Static GTFS URL (ZIP file)",
           "realtime_url": "Realtime GTFS URL (Protobuf file)",
           "name": "Integration Name"
         },
         "data_description": {
-          "static_url": "URL to the static GTFS data ZIP file",
-          "realtime_url": "URL to the GTFS realtime protobuf feed",
+          "static_url": "Link to the static GTFS data ZIP file",
+          "realtime_url": "Link to the GTFS realtime protobuf feed",
           "name": "Friendly name for this integration"
         }
       },
+      "discover_stops": {
+        "title": "Discovering Stops",
+        "description": "Found **{agencies}** agency with **{stops_count}** stops ({size_mb} MB GTFS data).\n\nClick **Submit** to continue selecting stops."
+      },
       "select_stops": {
         "title": "Select Stops to Monitor",
-        "description": "Choose which stops you want to monitor for departures. Found {stops_count} stop groups.",
+        "description": "🚏 **Found {stops_count:,} stops** in your GTFS data.\n\n💡 **Select stops from the searchable dropdown below**\n\nThe dropdown contains all stops sorted by name. You can search and select multiple stops.\n\nThis keeps your database tiny and fast!",
         "data": {
-          "selected_stops": "Selected Stops"
+          "selected_stops": "Select stops to monitor"
         },
         "data_description": {
-          "selected_stops": "Enter stop IDs separated by commas, or leave empty for all stops"
+          "selected_stops": "Choose one or more stops from the dropdown"
+        }
+      },
+      "review_groups": {
+        "title": "Review Stop Groups",
+        "description": "**Auto-detected {groups_count} group(s):**\n{groups_summary}\n\n**Ungrouped stops:** {ungrouped_stops}\n\nYou can modify the group names and stop IDs below, or just click Submit to accept."
+      },
+      "group_stops": {
+        "title": "Create Stop Groups?",
+        "description": "You can manually group stops together if desired.\n\n**Selected:** {selected_count} stops\n\n**No:** Treat each stop separately\n**Yes:** Manually create stop groups (e.g., group opposite sides of a street together)",
+        "data": {
+          "create_groups": "Create stop groups?"
+        }
+      },
+      "create_groups": {
+        "title": "Create Stop Group",
+        "description": "Create a group of stops to monitor together.\n\n**Your selected stops:**\n{selected_stops_list}\n\n💡 **Example:** Group 'Main St' and 'Main St (West)' together to see all departures in one sensor.",
+        "data": {
+          "group_name": "Group name",
+          "group_stops": "Stop IDs to group (comma-separated)"
+        }
+      },
+      "more_groups": {
+        "title": "Create More Groups?",
+        "description": "✅ Created **{groups_count}** group(s) so far.\n\nDo you want to create more stop groups?",
+        "data": {
+          "create_more": "Create more groups?"
+        }
+      },
+      "ask_routes": {
+        "title": "Filter by Routes?",
+        "description": "You can optionally filter by specific routes to make the database even smaller.\n\n**No:** Monitor all routes that serve your selected stops (recommended for most users)\n**Yes:** Only monitor specific routes (for advanced filtering)",
+        "data": {
+          "filter_routes": "Filter by routes?"
         }
       },
       "select_routes": {
         "title": "Select Routes to Monitor", 
-        "description": "Optionally filter by specific routes for each stop",
+        "description": "🚌 **Found {routes_count} routes** that serve your selected stops.\n\n💡 **Select routes from the searchable dropdown below**\n\nYou can search and select multiple routes. Leave empty to monitor all discovered routes.",
         "data": {
-          "selected_routes": "Selected Routes"
+          "selected_routes": "Select routes to monitor (optional)"
+        },
+        "data_description": {
+          "selected_routes": "Choose routes to filter, or leave empty for all routes"
         }
+      },
+      "final_processing": {
+        "title": "Setup Complete!",
+        "description": "## Configuration Summary for \"{name}\"\n\n**Selected {selected_stops_count} stops total**\n\n### Stop Groups ({groups_count}):\n{groups_list}\n\n### Individual Stops:\n{ungrouped_list}\n\n### Routes:\nMonitoring {selected_routes_count} routes (0 = all routes)\n\n---\nClick **Submit** to create sensors for your stops."
       }
     },
     "error": {
       "unknown": "Unknown error occurred",
       "cannot_connect": "Failed to connect to GTFS data source",
-      "invalid_auth": "Invalid authentication",
+      "invalid_auth": "Invalid authentication", 
       "cannot_load_stops": "Failed to load stops from GTFS data",
       "no_config": "Configuration not found"
     },
     "abort": {
-      "already_configured": "This GTFS source is already configured"
+      "already_configured": "This GTFS source is already configured",
+      "cannot_load_stops": "Could not load stops from GTFS data. Please check your URLs."
     }
   },
   "options": {
@@ -56,11 +101,6 @@
           "update_interval": "How often to fetch realtime updates (10-300 seconds)"
         }
       }
-    }
-  },
-  "selector": {
-    "stop": {
-      "text": {}
     }
   }
 }

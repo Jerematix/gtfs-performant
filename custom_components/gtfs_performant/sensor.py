@@ -24,33 +24,48 @@ async def async_setup_entry(
     database = hass.data[DOMAIN][entry.entry_id]["database"]
     
     entities = []
-    
-    # Create sensors for user-selected stops and routes
+
+    # Get stop groups and individual stops
     selected_stops = entry.data.get("selected_stops", [])
-    
+    stop_groups = entry.data.get("stop_groups", [])
+
+    # Get stop names from database
+    stop_names = await database.get_stop_names(selected_stops) if selected_stops else {}
+
     if not selected_stops:
         _LOGGER.warning("No stops selected, creating default sensor")
-        # Create a sensor that will be configured later
         entities.append(GTFSDepartureSensor(
-            coordinator, database, entry, "default", None
+            coordinator, database, entry, "default", None, None
         ))
     else:
-        # Create sensors for each selected stop/route combination
-        for stop_config in selected_stops:
-            stop_id = stop_config.get("stop_id")
-            stop_name = stop_config.get("stop_name", "Unknown Stop")
-            
-            # Create sensor for this stop
-            entities.append(GTFSDepartureSensor(
-                coordinator, database, entry, stop_id, stop_name
-            ))
-    
+        # Create sensors for stop groups (multiple stops combined)
+        grouped_stop_ids = set()
+        for group in stop_groups:
+            group_name = group.get("name", "Unknown Group")
+            group_stops = group.get("stops", [])
+            if group_stops:
+                grouped_stop_ids.update(group_stops)
+                _LOGGER.info("Creating grouped sensor: %s with stops %s", group_name, group_stops)
+                entities.append(GTFSDepartureSensor(
+                    coordinator, database, entry, group_stops[0], group_name, group_stops
+                ))
+
+        # Create sensors for ungrouped stops
+        for stop_id in selected_stops:
+            if stop_id not in grouped_stop_ids:
+                stop_name = stop_names.get(stop_id, f"Stop {stop_id}")
+                _LOGGER.info("Creating individual sensor for stop: %s (%s)", stop_name, stop_id)
+                entities.append(GTFSDepartureSensor(
+                    coordinator, database, entry, stop_id, stop_name, None
+                ))
+
+    _LOGGER.info("Created %d GTFS departure sensors", len(entities))
     async_add_entities(entities)
 
 
 class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
     """Sensor for displaying GTFS departure information."""
-    
+
     def __init__(
         self,
         coordinator,
@@ -58,6 +73,7 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
         entry: ConfigEntry,
         stop_id: Optional[str],
         stop_name: Optional[str],
+        grouped_stop_ids: Optional[list] = None,
     ) -> None:
         """Initialize the departure sensor."""
         super().__init__(coordinator)
@@ -65,6 +81,8 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
         self.entry = entry
         self.stop_id = stop_id
         self.stop_name = stop_name or "GTFS Departures"
+        # For grouped sensors, monitor multiple stop IDs
+        self.grouped_stop_ids = grouped_stop_ids or ([stop_id] if stop_id else [])
     
     @property
     def unique_id(self) -> str:
@@ -76,60 +94,103 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
         """Return sensor name."""
         return self.stop_name
     
+    def _get_all_departures(self) -> list:
+        """Get departures from all monitored stops, sorted by time."""
+        all_departures = []
+        departures_data = self.coordinator.data.get("departures", {}) if self.coordinator.data else {}
+
+        for stop_id in self.grouped_stop_ids:
+            stop_departures = departures_data.get(stop_id, [])
+            all_departures.extend(stop_departures)
+
+        # Sort by scheduled arrival time
+        all_departures.sort(key=lambda x: x.get("scheduled_arrival", "99:99:99"))
+        return all_departures
+
     @property
     def native_value(self) -> str:
         """Return current departures count."""
         if self.stop_id is None:
             return "Not Configured"
-        
-        departures = self.coordinator.data.get("departures", {}).get(self.stop_id, [])
-        return str(len(departures))
-    
+
+        departures = self._get_all_departures()
+        return str(len(departures)) if departures else "No departures"
+
+    def _format_departure(self, departure: dict) -> dict:
+        """Format a single departure with calculated times."""
+        scheduled_time = departure.get("scheduled_arrival")
+        delay = departure.get("arrival_delay", 0) or 0
+
+        expected_time_str = "--:--"
+        minutes_until = None
+        delay_minutes = int(delay / 60) if delay else 0
+
+        if scheduled_time:
+            try:
+                hours, mins, secs = map(int, scheduled_time.split(':'))
+                now = datetime.now()
+                scheduled = now.replace(hour=hours % 24, minute=mins, second=secs, microsecond=0)
+
+                # Handle times after midnight
+                if hours >= 24:
+                    scheduled = scheduled.replace(day=scheduled.day + 1, hour=hours - 24)
+
+                expected = scheduled + timedelta(seconds=delay)
+                expected_time_str = expected.strftime("%H:%M")
+
+                # Calculate minutes until departure
+                diff = (expected - now).total_seconds() / 60
+                minutes_until = max(0, int(diff))
+            except Exception:
+                pass
+
+        return {
+            "route": departure.get("route_short_name") or departure.get("route_id", "?"),
+            "destination": departure.get("trip_headsign", "Unknown"),
+            "scheduled": scheduled_time[:5] if scheduled_time else "--:--",
+            "expected": expected_time_str,
+            "delay_minutes": delay_minutes,
+            "minutes_until": minutes_until,
+            "vehicle_id": departure.get("vehicle_id"),
+        }
+
     @property
     def extra_state_attributes(self) -> dict:
         """Return additional attributes."""
         if self.stop_id is None:
             return {}
-        
-        departures = self.coordinator.data.get("departures", {}).get(self.stop_id, [])
-        
+
+        departures = self._get_all_departures()
+        formatted_departures = [self._format_departure(d) for d in departures[:10]]
+
         attributes = {
             "stop_id": self.stop_id,
             "stop_name": self.stop_name,
+            "monitored_stops": self.grouped_stop_ids,
             "last_update": datetime.now().isoformat(),
+            "departures_count": len(formatted_departures),
+            "departures": formatted_departures,
         }
-        
-        # Add departure details
-        for i, departure in enumerate(departures[:10], 1):
-            prefix = f"departure_{i}"
-            
-            # Calculate expected time with delay
-            scheduled_time = departure.get("scheduled_arrival")
-            delay = departure.get("arrival_delay", 0)
-            
-            expected_time_str = "Unknown"
-            if scheduled_time and delay is not None:
-                try:
-                    # Parse GTFS time format (HH:MM:SS)
-                    hours, mins, secs = map(int, scheduled_time.split(':'))
-                    scheduled = datetime.now().replace(
-                        hour=hours % 24, minute=mins, second=secs, microsecond=0
-                    )
-                    
-                    # Add delay in seconds
-                    expected = scheduled + timedelta(seconds=delay)
-                    expected_time_str = expected.strftime("%H:%M")
-                    
-                except Exception as e:
-                    _LOGGER.warning("Error parsing time: %s", e)
-            
-            attributes[f"{prefix}_route"] = departure.get("route_short_name", "Unknown")
-            attributes[f"{prefix}_destination"] = departure.get("trip_headsign", "Unknown")
-            attributes[f"{prefix}_scheduled"] = scheduled_time or "Unknown"
-            attributes[f"{prefix}_expected"] = expected_time_str
-            attributes[f"{prefix}_delay_minutes"] = int(delay / 60) if delay else 0
-            attributes[f"{prefix}_vehicle_id"] = departure.get("vehicle_id") or "Unknown"
-        
+
+        # Build markdown table for easy display
+        if formatted_departures:
+            md_lines = ["| Route | Destination | Time | Delay |", "|:---:|:---|:---:|:---:|"]
+            for dep in formatted_departures:
+                delay_str = f"+{dep['delay_minutes']}m" if dep['delay_minutes'] > 0 else "on time"
+                minutes = f"in {dep['minutes_until']}m" if dep['minutes_until'] is not None else dep['expected']
+                md_lines.append(f"| **{dep['route']}** | {dep['destination']} | {minutes} | {delay_str} |")
+            attributes["departures_markdown"] = "\n".join(md_lines)
+        else:
+            attributes["departures_markdown"] = "*No upcoming departures*"
+
+        # Also add individual departure attributes for templates
+        for i, dep in enumerate(formatted_departures, 1):
+            attributes[f"departure_{i}_route"] = dep["route"]
+            attributes[f"departure_{i}_destination"] = dep["destination"]
+            attributes[f"departure_{i}_expected"] = dep["expected"]
+            attributes[f"departure_{i}_delay"] = dep["delay_minutes"]
+            attributes[f"departure_{i}_minutes"] = dep["minutes_until"]
+
         return attributes
     
     @property
@@ -140,7 +201,7 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
     @property
     def device_class(self) -> str:
         """Return device class."""
-        return "timestamp"
+        return None  # Return None instead of timestamp to avoid datetime validation
     
     @property
     def available(self) -> bool:

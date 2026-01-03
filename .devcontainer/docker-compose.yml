@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  gtfs-performant-dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ../:/workspaces/gtfs-performant:cached
+      - /var/run/docker.sock:/var/run/docker.sock:cached
+    network_mode: host
+    command: sleep infinity
+    environment:
+      - DEVELOPMENT=1
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/bus/usb:/dev/bus/usb

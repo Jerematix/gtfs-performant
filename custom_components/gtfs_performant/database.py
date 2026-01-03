@@ -182,7 +182,21 @@ class GTFSDatabase:
         """)
         rows = await cursor.fetchall()
         return [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
-    
+
+    async def get_stop_names(self, stop_ids: list[str]) -> dict[str, str]:
+        """Get stop names for a list of stop IDs."""
+        if not stop_ids:
+            return {}
+        cursor = await self._connection.cursor()
+        placeholders = ",".join("?" * len(stop_ids))
+        await cursor.execute(f"""
+            SELECT stop_id, stop_name
+            FROM stops
+            WHERE stop_id IN ({placeholders})
+        """, stop_ids)
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows}
+
     async def get_routes_for_stop(self, stop_id: str) -> list[dict]:
         """Get all routes that serve a specific stop."""
         cursor = await self._connection.cursor()
@@ -213,7 +227,7 @@ class GTFSDatabase:
         """Get realtime departures for a stop with schedule info."""
         cursor = await self._connection.cursor()
         await cursor.execute("""
-            SELECT 
+            SELECT
                 rt.trip_id,
                 r.route_id,
                 r.route_short_name,
@@ -238,8 +252,61 @@ class GTFSDatabase:
         """, (stop_id, limit))
         rows = await cursor.fetchall()
         return [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
-    
-    async def close(self) -> None:
+
+    async def get_scheduled_departures(self, stop_id: str, limit: int = 10) -> list[dict]:
+        """Get upcoming scheduled departures for a stop."""
+        from datetime import datetime
+        cursor = await self._connection.cursor()
+
+        # Get current time in HH:MM:SS format
+        now = datetime.now()
+        current_time = now.strftime("%H:%M:%S")
+        weekday = now.strftime("%A").lower()  # monday, tuesday, etc.
+        today_date = now.strftime("%Y%m%d")
+
+        # Query scheduled departures for today
+        # First try with calendar, fall back to just stop_times if no calendar
+        await cursor.execute(f"""
+            SELECT DISTINCT
+                st.trip_id,
+                r.route_id,
+                r.route_short_name,
+                r.route_long_name,
+                r.route_color,
+                t.trip_headsign,
+                t.direction_id,
+                st.departure_time as scheduled_arrival,
+                st.departure_time as scheduled_departure,
+                COALESCE(rt.arrival_delay, 0) as arrival_delay,
+                rt.vehicle_id
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            LEFT JOIN calendar c ON t.service_id = c.service_id
+            LEFT JOIN realtime_updates rt ON st.trip_id = rt.trip_id AND st.stop_id = rt.stop_id
+            WHERE st.stop_id = ?
+            AND st.departure_time >= ?
+            AND st.departure_time < '28:00:00'
+            AND (c.service_id IS NULL OR (c.{weekday} = 1 AND c.start_date <= ? AND c.end_date >= ?))
+            ORDER BY st.departure_time ASC
+            LIMIT ?
+        """, (stop_id, current_time, today_date, today_date, limit))
+
+        rows = await cursor.fetchall()
+        return [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
+
+    async def get_departures(self, stop_ids: list[str], limit: int = 10) -> list[dict]:
+        """Get departures for multiple stops, sorted by time."""
+        all_departures = []
+        for stop_id in stop_ids:
+            deps = await self.get_scheduled_departures(stop_id, limit=limit)
+            all_departures.extend(deps)
+
+        # Sort by departure time and limit
+        all_departures.sort(key=lambda x: x.get("scheduled_departure", "99:99:99"))
+        return all_departures[:limit]
+
+    async def async_close(self) -> None:
         """Close database connection."""
         if self._connection:
             await self._connection.close()

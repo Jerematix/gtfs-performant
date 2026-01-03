@@ -1,0 +1,39 @@
+# Home Assistant Development Configuration
+homeassistant:
+  name: Home
+  latitude: 52.52
+  longitude: 13.405
+  elevation: 34
+  unit_system: metric
+  time_zone: Europe/Berlin
+  external_url: "http://localhost:8123"
+
+# Enable advanced logging
+logger:
+  default: info
+  logs:
+    custom_components.gtfs_performant: debug
+    homeassistant.components: info
+
+# Enable debug mode
+debug:
+
+# Enable frontend
+frontend:
+  themes: !include_dir_merge_named themes
+
+# Allow configuration changes
+config:
+
+# System health
+system_health:
+
+# Example GTFS Performant configuration (uncomment to use)
+sensor:
+  - platform: gtfs_performant
+    static_url: "https://download.gtfs.de/germany/rv_free/latest.zip"
+    realtime_url: "https://realtime.gtfs.de/realtime-free.pb"
+    name: "German Transit"
+
+# Enable demo data for testing
+demo:

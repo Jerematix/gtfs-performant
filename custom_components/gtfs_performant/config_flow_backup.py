@@ -10,6 +10,7 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+    SelectOptionDict,
 )
 
 from . import DOMAIN
@@ -40,13 +41,11 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.available_routes = []
         self.selected_stops = []
         self.selected_routes = []
-        self.stop_groups = []
     
     async def async_step_user(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
         """Step 1: Basic GTFS source configuration."""
-        _LOGGER.info("🔍 async_step_user called with user_input: %s", user_input)
         errors = {}
         if user_input is not None:
             try:
@@ -62,13 +61,11 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 "realtime_url": user_input["realtime_url"],
                                 "name": user_input.get("name", "GTFS Transit")
                             }
-                            _LOGGER.info("✅ URLs validated, proceeding to discover_stops")
                             return await self.async_step_discover_stops()
             except Exception as err:
                 _LOGGER.error("Error connecting to GTFS source: %s", err)
                 errors["base"] = "cannot_connect"
         
-        _LOGGER.info("📝 Showing user form")
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
@@ -78,47 +75,52 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_discover_stops(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
-        """Step 2: Download GTFS and discover available stops, then go directly to selection."""
-        _LOGGER.info("🔍 async_step_discover_stops called")
-
+        """Step 2: Download GTFS and discover available stops."""
+        if user_input is not None:
+            # User confirmed to proceed
+            return await self.async_step_select_stops()
+        
         # Download and parse GTFS to get stops
-        _LOGGER.info("📥 Discovering GTFS stops...")
         info = await self._discover_gtfs_stops()
-
+        
         if not info or not self.available_stops:
-            _LOGGER.error("❌ Failed to discover stops")
             return self.async_abort(reason="cannot_load_stops")
-
-        _LOGGER.info("✅ Discovered %d stops, proceeding to select_stops", len(self.available_stops))
-        # Go directly to stop selection (skip the empty confirmation step)
-        return await self.async_step_select_stops()
+        
+        return self.async_show_form(
+            step_id="discover_stops",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "stops_count": len(self.available_stops),
+                "agencies": info.get("agencies", "Unknown"),
+                "size_mb": info.get("size_mb", "Unknown")
+            }
+        )
     
     async def async_step_group_stops(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
-        """Step 4: Let users manually create stop groups if desired."""
+        """Step 4: Group duplicate stops together."""
         if user_input is not None:
-            # Check if user wants to create groups
+            # Process stop grouping
             if user_input.get("create_groups", "no") == "yes":
                 return await self.async_step_create_groups()
             else:
                 # Skip to route filtering
                 return await self.async_step_ask_routes()
-
+        
+        # Check if there are potential duplicate stops
+        has_duplicates = self._check_for_duplicate_stops()
+        
         return self.async_show_form(
             step_id="group_stops",
             data_schema=vol.Schema({
-                vol.Required("create_groups", default="no"): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            {"value": "no", "label": "No - treat stops separately"},
-                            {"value": "yes", "label": "Yes - manually group stops together"}
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                )
+                vol.Required("create_groups", default="no"): vol.In([
+                    ("no", "No - treat stops separately"),
+                    ("yes", "Yes - group duplicate stops together")
+                ])
             }),
             description_placeholders={
+                "has_duplicates": "Yes" if has_duplicates else "No",
                 "selected_count": len(self.selected_stops)
             }
         )
@@ -132,19 +134,19 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             selected_stops_input = user_input.get("selected_stops", [])
             if isinstance(selected_stops_input, list):
                 self.selected_stops = selected_stops_input
-
-            # Auto-generate groups based on same name (user can modify next)
-            self._auto_group_stops_by_name()
-
-            # Show groups for user to review/modify
-            return await self.async_step_review_groups()
+            
+            # Ask if they want to group stops
+            return await self.async_step_group_stops()
         
-        # Create selector options for ALL stops
+        # Create proper selector options for ALL stops using SelectOptionDict
         stop_options = [
-            {"value": stop['stop_id'], "label": f"{stop['stop_name']} ({stop['stop_id']})"}
+            SelectOptionDict(
+                value=stop['stop_id'],
+                label=f"{stop['stop_name']} ({stop['stop_id']})"
+            )
             for stop in self.available_stops
         ]
-
+        
         # Sort by label for better UX
         stop_options.sort(key=lambda x: x['label'])
         
@@ -154,7 +156,7 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="select_stops",
             data_schema=vol.Schema({
-                vol.Optional("selected_stops", default=[]): SelectSelector(
+                vol.Required("selected_stops"): SelectSelector(
                     SelectSelectorConfig(
                         options=stop_options,
                         mode=SelectSelectorMode.DROPDOWN,
@@ -168,72 +170,6 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
     
-    async def async_step_review_groups(
-        self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
-        """Step 4: Review and modify auto-generated stop groups."""
-        if user_input is not None:
-            # Parse the groups from user input
-            new_groups = []
-            group_idx = 0
-            while f"group_{group_idx}_name" in user_input:
-                group_name = user_input.get(f"group_{group_idx}_name", "").strip()
-                group_stops_str = user_input.get(f"group_{group_idx}_stops", "").strip()
-                if group_name and group_stops_str:
-                    group_stops = [s.strip() for s in group_stops_str.split(",") if s.strip()]
-                    if group_stops:
-                        new_groups.append({"name": group_name, "stops": group_stops})
-                group_idx += 1
-
-            self.stop_groups = new_groups
-            _LOGGER.info("User confirmed %d groups", len(self.stop_groups))
-            return await self.async_step_ask_routes()
-
-        # Build the form schema with pre-populated groups
-        schema_dict = {}
-
-        # Get stop info for display
-        stop_id_to_name = {
-            stop['stop_id']: stop['stop_name']
-            for stop in self.available_stops
-            if stop['stop_id'] in self.selected_stops
-        }
-
-        # Add fields for each existing group
-        for idx, group in enumerate(self.stop_groups):
-            schema_dict[vol.Optional(f"group_{idx}_name", default=group["name"])] = str
-            schema_dict[vol.Optional(f"group_{idx}_stops", default=",".join(group["stops"]))] = str
-
-        # Build description showing what was auto-detected
-        if self.stop_groups:
-            groups_summary = "\n".join([
-                f"**{g['name']}**: {len(g['stops'])} stops"
-                for g in self.stop_groups
-            ])
-        else:
-            groups_summary = "No groups auto-detected (all stops have unique names)"
-
-        # List ungrouped stops
-        grouped_stop_ids = set()
-        for g in self.stop_groups:
-            grouped_stop_ids.update(g["stops"])
-        ungrouped = [
-            f"{stop_id_to_name.get(sid, sid)} ({sid})"
-            for sid in self.selected_stops
-            if sid not in grouped_stop_ids
-        ]
-        ungrouped_summary = ", ".join(ungrouped) if ungrouped else "None"
-
-        return self.async_show_form(
-            step_id="review_groups",
-            data_schema=vol.Schema(schema_dict),
-            description_placeholders={
-                "groups_count": len(self.stop_groups),
-                "groups_summary": groups_summary,
-                "ungrouped_stops": ungrouped_summary,
-            }
-        )
-
     async def async_step_ask_routes(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
@@ -244,19 +180,14 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 # Skip to final processing
                 return await self.async_step_final_processing()
-
+        
         return self.async_show_form(
             step_id="ask_routes",
             data_schema=vol.Schema({
-                vol.Required("filter_routes", default="no"): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            {"value": "no", "label": "No - monitor all routes at my stops"},
-                            {"value": "yes", "label": "Yes - only specific routes"}
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                )
+                vol.Required("filter_routes", default="no"): vol.In([
+                    ("no", "No - monitor all routes at my stops"),
+                    ("yes", "Yes - only specific routes")
+                ])
             })
         )
     
@@ -274,13 +205,16 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         # Discover which routes serve the selected stops
         await self._discover_relevant_routes()
-
-        # Create selector options for routes
+        
+        # Create proper selector options for routes using SelectOptionDict
         route_options = [
-            {"value": route['route_id'], "label": f"{route.get('route_short_name', route['route_id'])} - {route.get('route_long_name', '')}"}
+            SelectOptionDict(
+                value=route['route_id'],
+                label=f"{route.get('route_short_name', route['route_id'])} - {route.get('route_long_name', '')}"
+            )
             for route in self.available_routes
         ]
-
+        
         # Sort by label for better UX
         route_options.sort(key=lambda x: x['label'])
         
@@ -314,54 +248,20 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "name": self.gtfs_data["name"],
                 "selected_stops": self.selected_stops,
                 "selected_routes": list(self.selected_routes) if self.selected_routes else [],
-                "stop_groups": self.stop_groups,
             }
-
+            
             return self.async_create_entry(
                 title=self.gtfs_data["name"],
                 data=config_data
             )
-
-        # Build summary information
-        stop_id_to_name = {
-            stop['stop_id']: stop['stop_name']
-            for stop in self.available_stops
-            if stop['stop_id'] in self.selected_stops
-        }
-
-        # Build groups summary
-        if self.stop_groups:
-            groups_list = "\n".join([
-                f"• **{g['name']}** ({len(g['stops'])} stops)"
-                for g in self.stop_groups
-            ])
-        else:
-            groups_list = "None"
-
-        # Build ungrouped stops list
-        grouped_ids = set()
-        for g in self.stop_groups:
-            grouped_ids.update(g.get("stops", []))
-        ungrouped_stops = [sid for sid in self.selected_stops if sid not in grouped_ids]
-        if ungrouped_stops:
-            ungrouped_list = "\n".join([
-                f"• {stop_id_to_name.get(sid, sid)}"
-                for sid in ungrouped_stops
-            ])
-        else:
-            ungrouped_list = "None (all stops are grouped)"
-
-        # Show summary
+        
+        # Show summary first
         return self.async_show_form(
             step_id="final_processing",
             data_schema=vol.Schema({}),
             description_placeholders={
-                "name": self.gtfs_data["name"],
                 "selected_stops_count": len(self.selected_stops),
-                "groups_count": len(self.stop_groups),
-                "groups_list": groups_list,
-                "ungrouped_list": ungrouped_list,
-                "selected_routes_count": len(self.selected_routes) if self.selected_routes else 0,
+                "selected_routes_count": len(self.selected_routes) if self.selected_routes else 0
             }
         )
     
@@ -512,85 +412,31 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception as e:
             _LOGGER.error("Error discovering routes: %s", e)
     
-    def _auto_group_stops_by_name(self) -> None:
-        """Automatically group selected stops that have the same name."""
-        if len(self.selected_stops) < 2:
-            return
-
-        # Build a map of stop_id -> stop_name for selected stops
-        selected_stop_info = {
-            stop['stop_id']: stop['stop_name']
-            for stop in self.available_stops
-            if stop['stop_id'] in self.selected_stops
-        }
-
-        # Group stops by name
-        name_to_stops: dict[str, list[str]] = {}
-        for stop_id, stop_name in selected_stop_info.items():
-            if stop_name not in name_to_stops:
-                name_to_stops[stop_name] = []
-            name_to_stops[stop_name].append(stop_id)
-
-        # Create groups for names with multiple stops
-        self.stop_groups = []
-        for name, stop_ids in name_to_stops.items():
-            if len(stop_ids) > 1:
-                self.stop_groups.append({
-                    "name": name,
-                    "stops": stop_ids
-                })
-                _LOGGER.info("Auto-grouped %d stops under '%s': %s", len(stop_ids), name, stop_ids)
-
-        if self.stop_groups:
-            _LOGGER.info("Created %d automatic stop groups", len(self.stop_groups))
-
     def _check_for_duplicate_stops(self) -> bool:
         """Check if selected stops have potential duplicates."""
         if len(self.selected_stops) < 2:
             return False
-
+        
         # Simple duplicate check based on similar names
         stop_names = [stop['stop_name'].lower() for stop in self.available_stops if stop['stop_id'] in self.selected_stops]
-
+        
         # Check for similar names (indicating duplicates)
         for i, name1 in enumerate(stop_names):
             for name2 in stop_names[i+1:]:
                 if name1 in name2 or name2 in name1:
                     return True
-
+        
         return False
     
     async def async_step_create_groups(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
-        """Step 5: Manually create stop groups."""
+        """Step 5: Create stop groups."""
         if user_input is not None:
-            # Parse the group definition
-            group_name = user_input.get("group_name", "").strip()
-            group_stops_str = user_input.get("group_stops", "").strip()
-            
-            if group_name and group_stops_str:
-                # Parse comma-separated stop IDs
-                group_stops = [s.strip() for s in group_stops_str.split(",")]
-                
-                # Add to groups
-                self.stop_groups.append({
-                    "name": group_name,
-                    "stops": group_stops
-                })
-                
-                # Ask if they want to create more groups
-                return await self.async_step_more_groups()
-            else:
-                # No group created, move to routes
-                return await self.async_step_ask_routes()
+            # Process stop grouping (simplified for now)
+            return await self.async_step_ask_routes()
         
-        # Show form for creating a group
-        selected_stop_details = "\n".join([
-            f"• {stop['stop_name']} ({stop['stop_id']})"
-            for stop in self.available_stops if stop['stop_id'] in self.selected_stops
-        ])
-        
+        # Show potential duplicates and let user group them
         return self.async_show_form(
             step_id="create_groups",
             data_schema=vol.Schema({
@@ -598,36 +444,6 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("group_stops", default=""): str,
             }),
             description_placeholders={
-                "selected_count": len(self.selected_stops),
-                "selected_stops_list": selected_stop_details[:500]  # Limit length
-            }
-        )
-    
-    async def async_step_more_groups(
-        self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
-        """Step 6: Ask if user wants to create more groups."""
-        if user_input is not None:
-            if user_input.get("create_more", "no") == "yes":
-                return await self.async_step_create_groups()
-            else:
-                # Done with groups, move to routes
-                return await self.async_step_ask_routes()
-
-        return self.async_show_form(
-            step_id="more_groups",
-            data_schema=vol.Schema({
-                vol.Required("create_more", default="no"): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            {"value": "no", "label": "No - done creating groups"},
-                            {"value": "yes", "label": "Yes - create another group"}
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                )
-            }),
-            description_placeholders={
-                "groups_count": len(self.stop_groups)
+                "selected_count": len(self.selected_stops)
             }
         )

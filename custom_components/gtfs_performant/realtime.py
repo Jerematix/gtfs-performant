@@ -3,7 +3,7 @@ import aiohttp
 import logging
 from typing import Optional
 
-from gtfs_realtime.bindings import FeedMessage
+from google.transit.gtfs_realtime_pb2 import FeedMessage
 
 from .database import GTFSDatabase
 
