@@ -13,4 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Hassfest validation
-        uses: home-assistant/actions/tools/hassfest@master
+        uses: home-assistant/actions@master
+        with:
+          args: hassfest
