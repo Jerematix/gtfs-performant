@@ -5,6 +5,8 @@ A high-performance GTFS (General Transit Feed Specification) integration for Hom
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 ![HA Version](https://img.shields.io/badge/HA-2025.7%2B-green)
+![hacs_validation][hacs-badge]
+![hassfest_validation][hassfest-badge]
 
 ## 🚀 Features
 
@@ -218,3 +220,6 @@ If you find this integration helpful, please consider giving it a star on GitHub
 
 - **Issues**: [GitHub Issues](https://github.com/jerematix/gtfs-performant/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/jerematix/gtfs-performant/discussions)
+
+[hacs-badge]: https://github.com/jerematix/gtfs-performant/actions/workflows/hacs.yaml/badge.svg
+[hassfest-badge]: https://github.com/jerematix/gtfs-performant/actions/workflows/hassfest.yaml/badge.svg
