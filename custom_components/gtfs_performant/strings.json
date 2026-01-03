@@ -1,0 +1,66 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "GTFS Performant Setup",
+        "description": "Configure your GTFS transit data sources",
+        "data": {
+          "static_url": "Static GTFS URL (ZIP file)",
+          "realtime_url": "Realtime GTFS URL (Protobuf file)",
+          "name": "Integration Name"
+        },
+        "data_description": {
+          "static_url": "URL to the static GTFS data ZIP file",
+          "realtime_url": "URL to the GTFS realtime protobuf feed",
+          "name": "Friendly name for this integration"
+        }
+      },
+      "select_stops": {
+        "title": "Select Stops to Monitor",
+        "description": "Choose which stops you want to monitor for departures. Found {stops_count} stop groups.",
+        "data": {
+          "selected_stops": "Selected Stops"
+        },
+        "data_description": {
+          "selected_stops": "Enter stop IDs separated by commas, or leave empty for all stops"
+        }
+      },
+      "select_routes": {
+        "title": "Select Routes to Monitor", 
+        "description": "Optionally filter by specific routes for each stop",
+        "data": {
+          "selected_routes": "Selected Routes"
+        }
+      }
+    },
+    "error": {
+      "unknown": "Unknown error occurred",
+      "cannot_connect": "Failed to connect to GTFS data source",
+      "invalid_auth": "Invalid authentication",
+      "cannot_load_stops": "Failed to load stops from GTFS data",
+      "no_config": "Configuration not found"
+    },
+    "abort": {
+      "already_configured": "This GTFS source is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "GTFS Performant Options",
+        "description": "Configure update intervals and other options",
+        "data": {
+          "update_interval": "Update Interval (seconds)"
+        },
+        "data_description": {
+          "update_interval": "How often to fetch realtime updates (10-300 seconds)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "stop": {
+      "text": {}
+    }
+  }
+}

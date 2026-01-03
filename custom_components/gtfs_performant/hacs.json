@@ -1,0 +1,16 @@
+{
+  "name": "GTFS Performant",
+  "render_readme": true,
+  "filename": "gtfs_performant.zip",
+  "homeassistant": "2025.7.0",
+  "zip_release": true,
+  "zip_include": [
+    "custom_components/gtfs_performant/**/*"
+  ],
+  "zip_exclude": [
+    "**/*.pyc",
+    "**/__pycache__",
+    "**/.git*",
+    "**/*.md"
+  ]
+}

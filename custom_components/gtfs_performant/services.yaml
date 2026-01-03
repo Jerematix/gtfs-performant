@@ -1,0 +1,37 @@
+reload_gtfs_data:
+  description: Reload GTFS static data
+  fields:
+    force_refresh:
+      description: Force complete reload of all data
+      example: false
+      required: false
+      selector:
+        boolean:
+
+refresh_realtime:
+  description: Force refresh of realtime data
+  fields: {}
+
+manage_stops:
+  description: Add or remove stops from monitoring
+  fields:
+    action:
+      description: Action to perform
+      required: true
+      selector:
+        select:
+          options:
+            - add
+            - remove
+            - group
+    stop_id:
+      description: Stop ID to manage
+      required: true
+      example: "12345"
+      selector:
+        text:
+    group_id:
+      description: Group ID for grouping duplicate stops
+      required: false
+      selector:
+        text:

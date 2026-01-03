@@ -1,0 +1,12 @@
+{
+  "domain": "gtfs_performant",
+  "name": "GTFS Performant",
+  "codeowners": ["@jerematix"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/jerematix/gtfs-performant",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/jerematix/gtfs-performant/issues",
+  "requirements": ["gtfs-realtime-bindings", "aiohttp"],
+  "version": "0.1.0"
+}
