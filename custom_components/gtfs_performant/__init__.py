@@ -99,6 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Initialize database
     db_path = hass.config.path(f"gtfs_{entry.entry_id}.db")
+    _LOGGER.info("🗄️ Database path: %s", db_path)
     database = GTFSDatabase(db_path)
     await database.async_init()
 
@@ -108,13 +109,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     selected_stops = entry.data.get("selected_stops", [])
     selected_routes = entry.data.get("selected_routes", [])
 
+    _LOGGER.info("🚀 Setting up GTFS Performant for %d stops", len(selected_stops))
+
     loader = GTFSLoader(database, static_url, selected_stops, selected_routes)
     realtime_handler = GTFSRealtimeHandler(database, realtime_url)
 
     # Load static GTFS data (will skip if already loaded)
     try:
         await loader.async_load_gtfs_data()
-        _LOGGER.info("GTFS data ready")
+        _LOGGER.info("✅ GTFS data ready")
     except Exception as err:
         _LOGGER.error("Failed to load static GTFS data: %s", err)
         return False

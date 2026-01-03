@@ -30,11 +30,13 @@ class GTFSDatabase:
         """)
         result = await cursor.fetchone()
         if not result:
+            _LOGGER.debug("No GTFS URL found in database config")
             return False
 
         stored_url = result[0]
         # Check if URL matches
         if stored_url != static_url:
+            _LOGGER.debug("GTFS URL mismatch: stored=%s, current=%s", stored_url, static_url)
             return False
 
         # Check if we have actual data
@@ -44,7 +46,10 @@ class GTFSDatabase:
         await cursor.execute("SELECT COUNT(*) FROM stop_times")
         stop_times_count = await cursor.fetchone()
 
-        return stop_count[0] > 0 and stop_times_count[0] > 0
+        has_data = stop_count[0] > 0 and stop_times_count[0] > 0
+        _LOGGER.debug("Database check: stops=%d, stop_times=%d, has_data=%s",
+                     stop_count[0], stop_times_count[0], has_data)
+        return has_data
 
     async def store_metadata(self, static_url: str) -> None:
         """Store metadata about the loaded GTFS data."""
@@ -54,28 +59,27 @@ class GTFSDatabase:
             VALUES ('gtfs_url', ?)
         """, (static_url,))
         await self._connection.commit()
+        _LOGGER.info("Stored GTFS URL metadata: %s", static_url[:50] + "..." if len(static_url) > 50 else static_url)
 
     async def needs_full_load(self, static_url: str, selected_stops: list[str]) -> bool:
-        """Check if we need to do a full GTFS load."""
-        # Check if URL matches
-        if not await self.is_data_loaded(static_url):
-            return True
+        """Check if we need to do a full GTFS load.
 
-        # Check if all selected stops are in the database
-        if selected_stops:
-            cursor = await self._connection.cursor()
-            placeholders = ",".join("?" * len(selected_stops))
-            await cursor.execute(f"""
-                SELECT COUNT(DISTINCT stop_id) FROM stops
-                WHERE stop_id IN ({placeholders})
-            """, selected_stops)
-            result = await cursor.fetchone()
-            stored_stop_count = result[0] if result else 0
+        Returns True if:
+        - GTFS URL changed (full reload needed)
+        - No data in database yet
+        - Database exists but is empty
 
-            if stored_stop_count != len(selected_stops):
-                return True
+        Returns False if:
+        - Same GTFS URL and data exists (use cached data)
+        """
+        # Just check if we have valid data for this GTFS URL
+        # Don't check individual stops - user can add/remove stops without full reload
+        has_data = await self.is_data_loaded(static_url)
 
-        return False
+        if not has_data:
+            _LOGGER.info("Database needs full load: no cached data for this GTFS source")
+
+        return not has_data
     
     async def _create_schema(self) -> None:
         """Create database schema optimized for GTFS queries."""

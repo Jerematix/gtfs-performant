@@ -35,6 +35,9 @@ class GTFSLoader:
         Args:
             force_reload: If True, force a full reload even if data exists
         """
+        _LOGGER.info("async_load_gtfs_data called: force_reload=%s, stops=%d",
+                    force_reload, len(self.selected_stops))
+
         if not self.selected_stops:
             _LOGGER.warning("No stops selected - skipping GTFS load")
             return
@@ -43,10 +46,10 @@ class GTFSLoader:
         if not force_reload:
             needs_load = await self.database.needs_full_load(self.static_url, list(self.selected_stops))
             if not needs_load:
-                _LOGGER.info("Database already has valid data for this GTFS source - skipping load")
+                _LOGGER.info("✅ Database already has valid data for this GTFS source - skipping load (startup will be instant!)")
                 return
 
-        _LOGGER.info("Starting ultra-optimized GTFS load for %d stops...", len(self.selected_stops))
+        _LOGGER.info("⚠️ Starting ultra-optimized GTFS load for %d stops...", len(self.selected_stops))
 
         # Clear existing data if reloading
         if force_reload:
@@ -67,9 +70,10 @@ class GTFSLoader:
         await self._load_all_data_streaming()
 
         # Store metadata to avoid reload on next startup
+        _LOGGER.info("💾 Storing metadata for future fast startups...")
         await self.database.store_metadata(self.static_url)
 
-        _LOGGER.info("GTFS load complete! %d trips serving your stops.", len(self._discovered_trips))
+        _LOGGER.info("✅ GTFS load complete! %d trips serving your stops.", len(self._discovered_trips))
 
     async def _clear_database(self) -> None:
         """Clear existing GTFS data from database."""
