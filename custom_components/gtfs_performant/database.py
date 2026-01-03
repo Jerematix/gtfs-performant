@@ -1,7 +1,7 @@
 """SQLite database layer for GTFS data with optimized schema."""
 import aiosqlite
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -313,15 +313,33 @@ class GTFSDatabase:
         return [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
 
     async def get_scheduled_departures(self, stop_id: str, limit: int = 10) -> list[dict]:
-        """Get upcoming scheduled departures for a stop."""
-        from datetime import datetime
+        """Get upcoming scheduled departures for a stop - timezone aware."""
         cursor = await self._connection.cursor()
 
-        # Get current time in HH:MM:SS format
-        now = datetime.now()
+        # Get agency timezone from database
+        await cursor.execute("SELECT agency_timezone FROM agency LIMIT 1")
+        agency_tz_result = await cursor.fetchone()
+        agency_tz = agency_tz_result[0] if agency_tz_result else None
+
+        # Get current time in GTFS timezone
+        try:
+            import zoneinfo
+            if agency_tz:
+                tz = zoneinfo.ZoneInfo(agency_tz)
+                now = datetime.now(tz)
+            else:
+                # Fallback to local system timezone if agency timezone not found
+                now = datetime.now()
+                _LOGGER.warning("No agency timezone found, using system time")
+        except Exception as e:
+            _LOGGER.warning("Error getting timezone: %s, using system time", e)
+            now = datetime.now()
+
         current_time = now.strftime("%H:%M:%S")
         weekday = now.strftime("%A").lower()  # monday, tuesday, etc.
         today_date = now.strftime("%Y%m%d")
+
+        _LOGGER.debug("Querying departures for stop=%s at %s (tz=%s)", stop_id, current_time, agency_tz or "system")
 
         # Query scheduled departures for today
         # trip_headsign is populated with final stop name during GTFS import if not provided
