@@ -44,8 +44,12 @@ def _slugify(text: str) -> str:
     return text
 
 
-async def _register_card(hass: HomeAssistant) -> None:
-    """Register the custom GTFS departures card."""
+def _register_card(hass: HomeAssistant) -> None:
+    """Copy the custom GTFS departures card to www folder.
+
+    Note: Does NOT auto-register as Lovelace resource to avoid auto-adding to dashboards.
+    Users can manually add the card if desired.
+    """
     try:
         # Source path (in custom_components)
         src = Path(__file__).parent / "www" / CARD_JS
@@ -58,39 +62,12 @@ async def _register_card(hass: HomeAssistant) -> None:
         www_dir.mkdir(parents=True, exist_ok=True)
         dst = www_dir / CARD_JS
 
-        # Copy the card file
+        # Copy the card file (just make it available, don't register)
         shutil.copy2(src, dst)
-        _LOGGER.info("Copied GTFS card to %s", dst)
-
-        # Register as Lovelace resource
-        url = f"/local/{CARD_JS}"
-
-        # Check if already registered via storage
-        storage_path = Path(hass.config.path(".storage/lovelace_resources"))
-        resources_data = {"version": 1, "minor_version": 1, "key": "lovelace_resources", "data": {"items": []}}
-
-        if storage_path.exists():
-            with open(storage_path, "r") as f:
-                resources_data = json.load(f)
-
-        items = resources_data.get("data", {}).get("items", [])
-        already_registered = any(r.get("url") == url for r in items)
-
-        if not already_registered:
-            items.append({
-                "id": "gtfs_departures_card",
-                "type": "module",
-                "url": url
-            })
-            resources_data["data"]["items"] = items
-
-            with open(storage_path, "w") as f:
-                json.dump(resources_data, f, indent=2)
-
-            _LOGGER.info("Registered GTFS card as Lovelace resource")
+        _LOGGER.info("Copied GTFS card to %s (available for manual use)", dst)
 
     except Exception as err:
-        _LOGGER.warning("Could not register card: %s", err)
+        _LOGGER.warning("Could not copy card: %s", err)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

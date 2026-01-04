@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+import homeassistant.util.dt as dt_util
 
 from . import DOMAIN
 
@@ -22,7 +23,23 @@ async def async_setup_entry(
     """Set up GTFS Performant sensor entities."""
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     database = hass.data[DOMAIN][entry.entry_id]["database"]
-    
+
+    # Get agency timezone for accurate time calculations
+    import asyncio
+    import aiosqlite
+
+    agency_timezone = None
+    try:
+        db_path = hass.config.path(f"gtfs_{entry.entry_id}.db")
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute("SELECT agency_timezone FROM agency LIMIT 1")
+            result = await cursor.fetchone()
+            if result:
+                agency_timezone = result[0]
+                _LOGGER.info("Using agency timezone: %s", agency_timezone)
+    except Exception as e:
+        _LOGGER.warning("Could not get agency timezone: %s", e)
+
     entities = []
 
     # Get stop groups and individual stops
@@ -35,7 +52,7 @@ async def async_setup_entry(
     if not selected_stops:
         _LOGGER.warning("No stops selected, creating default sensor")
         entities.append(GTFSDepartureSensor(
-            coordinator, database, entry, "default", None, None
+            coordinator, database, entry, "default", None, None, agency_timezone
         ))
     else:
         # Create sensors for stop groups (multiple stops combined)
@@ -47,7 +64,7 @@ async def async_setup_entry(
                 grouped_stop_ids.update(group_stops)
                 _LOGGER.info("Creating grouped sensor: %s with stops %s", group_name, group_stops)
                 entities.append(GTFSDepartureSensor(
-                    coordinator, database, entry, group_stops[0], group_name, group_stops
+                    coordinator, database, entry, group_stops[0], group_name, group_stops, agency_timezone
                 ))
 
         # Create sensors for ungrouped stops
@@ -56,7 +73,7 @@ async def async_setup_entry(
                 stop_name = stop_names.get(stop_id, f"Stop {stop_id}")
                 _LOGGER.info("Creating individual sensor for stop: %s (%s)", stop_name, stop_id)
                 entities.append(GTFSDepartureSensor(
-                    coordinator, database, entry, stop_id, stop_name, None
+                    coordinator, database, entry, stop_id, stop_name, None, agency_timezone
                 ))
 
     _LOGGER.info("Created %d GTFS departure sensors", len(entities))
@@ -74,6 +91,7 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
         stop_id: Optional[str],
         stop_name: Optional[str],
         grouped_stop_ids: Optional[list] = None,
+        agency_timezone: Optional[str] = None,
     ) -> None:
         """Initialize the departure sensor."""
         super().__init__(coordinator)
@@ -81,6 +99,7 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
         self.entry = entry
         self.stop_id = stop_id
         self.stop_name = stop_name or "GTFS Departures"
+        self.agency_timezone = agency_timezone
         # For grouped sensors, monitor multiple stop IDs
         self.grouped_stop_ids = grouped_stop_ids or ([stop_id] if stop_id else [])
     
@@ -117,7 +136,7 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
         return str(len(departures)) if departures else "No departures"
 
     def _format_departure(self, departure: dict) -> dict:
-        """Format a single departure with calculated times."""
+        """Format a single departure with calculated times - timezone aware."""
         scheduled_time = departure.get("scheduled_arrival")
         delay = departure.get("arrival_delay", 0) or 0
 
@@ -128,12 +147,25 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
         if scheduled_time:
             try:
                 hours, mins, secs = map(int, scheduled_time.split(':'))
-                now = datetime.now()
+
+                # Get current time in agency timezone
+                if self.agency_timezone:
+                    try:
+                        import zoneinfo
+                        tz = zoneinfo.ZoneInfo(self.agency_timezone)
+                        now = datetime.now(tz)
+                    except Exception:
+                        now = dt_util.now()
+                else:
+                    now = dt_util.now()
+
                 scheduled = now.replace(hour=hours % 24, minute=mins, second=secs, microsecond=0)
 
-                # Handle times after midnight
+                # Handle times after midnight (GTFS times can go to 28:00:00)
                 if hours >= 24:
-                    scheduled = scheduled.replace(day=scheduled.day + 1, hour=hours - 24)
+                    from datetime import timedelta
+                    scheduled = scheduled.replace(day=scheduled.day) + timedelta(days=1)
+                    scheduled = scheduled.replace(hour=hours - 24)
 
                 expected = scheduled + timedelta(seconds=delay)
                 expected_time_str = expected.strftime("%H:%M")
@@ -141,8 +173,8 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
                 # Calculate minutes until departure
                 diff = (expected - now).total_seconds() / 60
                 minutes_until = max(0, int(diff))
-            except Exception:
-                pass
+            except Exception as e:
+                _LOGGER.warning("Error formatting departure time: %s", e)
 
         return {
             "route": departure.get("route_short_name") or departure.get("route_id", "?"),
