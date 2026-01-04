@@ -1,6 +1,6 @@
 """GTFS Performant integration for Home Assistant."""
 import asyncio
-from datetime import timedelta
+from datetime import timedelta, datetime
 import logging
 import json
 import re
@@ -11,6 +11,7 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.event import async_track_time_interval, async_track_point_in_time
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 
@@ -23,7 +24,9 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "gtfs_performant"
 PLATFORMS = ["sensor"]
 
-DEFAULT_SCAN_INTERVAL = 120  # seconds (2 minutes)
+DEFAULT_UPDATE_INTERVAL = 120  # seconds (2 minutes) - for departure queries and realtime updates
+DEFAULT_FULL_UPDATE_DAY = 1  # 1st of every month
+DEFAULT_FULL_UPDATE_HOUR = 4  # 4 AM
 CARD_JS = "gtfs-departures-card.js"
 
 SERVICE_RELOAD_GTFS = "reload_gtfs_data"
@@ -44,11 +47,11 @@ def _slugify(text: str) -> str:
     return text
 
 
-def _register_card(hass: HomeAssistant) -> None:
-    """Copy the custom GTFS departures card to www folder.
+async def _register_card(hass: HomeAssistant) -> None:
+    """Register the custom GTFS departures card as a Lovelace resource.
 
-    Note: Does NOT auto-register as Lovelace resource to avoid auto-adding to dashboards.
-    Users can manually add the card if desired.
+    This makes the card available in the card picker but does NOT auto-add
+    it to any dashboard. Users must manually add it if they want to use it.
     """
     try:
         # Source path (in custom_components)
@@ -62,12 +65,42 @@ def _register_card(hass: HomeAssistant) -> None:
         www_dir.mkdir(parents=True, exist_ok=True)
         dst = www_dir / CARD_JS
 
-        # Copy the card file (just make it available, don't register)
+        # Copy the card file
         shutil.copy2(src, dst)
-        _LOGGER.info("Copied GTFS card to %s (available for manual use)", dst)
+        _LOGGER.info("Copied GTFS card to %s", dst)
+
+        # Register as Lovelace resource (makes it available in card picker)
+        # Add version for cache busting
+        url = f"/local/{CARD_JS}?v=1.2.0"
+
+        # Check if already registered via storage
+        storage_path = Path(hass.config.path(".storage/lovelace_resources"))
+        resources_data = {"version": 1, "minor_version": 1, "key": "lovelace_resources", "data": {"items": []}}
+
+        if storage_path.exists():
+            with open(storage_path, "r") as f:
+                resources_data = json.load(f)
+
+        items = resources_data.get("data", {}).get("items", [])
+        base_url = f"/local/{CARD_JS}"
+
+        # Remove ALL existing gtfs card entries (handles duplicates)
+        items = [i for i in items if not i.get("url", "").startswith(base_url)]
+
+        # Add the current version
+        items.append({
+            "id": "gtfs_departures_card",
+            "type": "module",
+            "url": url
+        })
+
+        resources_data["data"]["items"] = items
+        with open(storage_path, "w") as f:
+            json.dump(resources_data, f, indent=2)
+        _LOGGER.info("Registered GTFS card in Lovelace resources: %s", url)
 
     except Exception as err:
-        _LOGGER.warning("Could not copy card: %s", err)
+        _LOGGER.warning("Could not register card: %s", err)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -161,13 +194,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_remove(DOMAIN, SERVICE_REFRESH_REALTIME)
 
         data = hass.data[DOMAIN].pop(entry.entry_id)
+
+        # Clean up scheduled tasks
+        if "coordinator" in data:
+            await data["coordinator"].async_shutdown()
+
         await data["database"].async_close()
 
     return unload_ok
 
 
 class GTFSDataUpdateCoordinator(DataUpdateCoordinator):
-    """Coordinator to manage GTFS realtime data updates."""
+    """Coordinator to manage GTFS realtime data updates and monthly full reloads."""
 
     def __init__(
         self,
@@ -179,7 +217,8 @@ class GTFSDataUpdateCoordinator(DataUpdateCoordinator):
     ) -> None:
         """Initialize the coordinator."""
         # Get update interval from config or use default
-        update_interval_seconds = entry.data.get("update_interval", DEFAULT_SCAN_INTERVAL)
+        update_interval_seconds = entry.data.get("update_interval", DEFAULT_UPDATE_INTERVAL)
+
         super().__init__(
             hass,
             _LOGGER,
@@ -191,6 +230,75 @@ class GTFSDataUpdateCoordinator(DataUpdateCoordinator):
         self.realtime_handler = realtime_handler
         self.loader = loader
         self.selected_stops = entry.data.get("selected_stops", [])
+
+        # Set up monthly full reload task
+        self._monthly_update_task = None
+        self._setup_monthly_update()
+
+    def _setup_monthly_update(self):
+        """Set up monthly full GTFS data reload."""
+        from datetime import timedelta
+
+        full_update_day = self.entry.data.get("full_update_day", DEFAULT_FULL_UPDATE_DAY)
+        full_update_hour = self.entry.data.get("full_update_hour", DEFAULT_FULL_UPDATE_HOUR)
+
+        async def _monthly_full_reload(now: datetime) -> None:
+            """Perform full GTFS data reload."""
+            _LOGGER.info("🔄 Starting monthly full GTFS data reload...")
+            try:
+                await self.loader.async_load_gtfs_data(force_reload=True)
+                await self.async_refresh()
+                _LOGGER.info("✅ Monthly full GTFS data reload complete")
+            except Exception as e:
+                _LOGGER.error("Monthly full GTFS reload failed: %s", e)
+
+            # Schedule next update
+            self._schedule_next_monthly_update()
+
+        self._schedule_next_monthly_update = lambda: async_track_point_in_time(
+            self.hass,
+            _monthly_full_reload,
+            self._get_next_monthly_update_time(),
+        )
+
+        # Start the recurring task
+        self._monthly_update_task = self._schedule_next_monthly_update()
+        _LOGGER.info("📅 Scheduled monthly full GTFS reload for day %d at %d:00",
+                   full_update_day, full_update_hour)
+
+    def _get_next_monthly_update_time(self) -> datetime:
+        """Calculate next monthly update time."""
+        full_update_day = self.entry.data.get("full_update_day", DEFAULT_FULL_UPDATE_DAY)
+        full_update_hour = self.entry.data.get("full_update_hour", DEFAULT_FULL_UPDATE_HOUR)
+
+        import homeassistant.util.dt as dt_util
+        now = dt_util.now()
+        # Create target date for this month
+        target = now.replace(day=full_update_day, hour=full_update_hour, minute=0, second=0, microsecond=0)
+
+        # If we've passed the target day this month, schedule for next month
+        if now.day > full_update_day or (now.day == full_update_day and now.hour >= full_update_hour):
+            # Move to next month
+            if now.month == 12:
+                target = target.replace(year=now.year + 1, month=1)
+            else:
+                target = target.replace(month=now.month + 1)
+
+        return target
+
+    async def _async_update_realtime(self):
+        """Update realtime data separately from departure queries."""
+        try:
+            await self.realtime_handler.async_update_realtime_data()
+            _LOGGER.debug("Realtime data updated")
+        except Exception as e:
+            _LOGGER.debug("Realtime update failed: %s", e)
+
+    async def async_shutdown(self):
+        """Clean up scheduled tasks."""
+        if self._monthly_update_task:
+            self._monthly_update_task()
+            self._monthly_update_task = None
 
     async def _async_update_data(self) -> dict:
         """Fetch latest scheduled + realtime data."""

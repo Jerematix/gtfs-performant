@@ -305,10 +305,12 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_final_processing(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
-        """Step 6: Show summary, configure update interval, and create entry."""
+        """Step 6: Show summary, configure update intervals, and create entry."""
         if user_input is not None:
-            # Get the update interval (default 30 seconds)
-            update_interval = int(user_input.get("update_interval", "30"))
+            # Get the update intervals
+            update_interval = int(user_input.get("update_interval", "120"))
+            full_update_day = int(user_input.get("full_update_day", "1"))
+            full_update_hour = int(user_input.get("full_update_hour", "4"))
 
             # Create the config entry
             config_data = {
@@ -319,6 +321,8 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "selected_routes": list(self.selected_routes) if self.selected_routes else [],
                 "stop_groups": self.stop_groups,
                 "update_interval": update_interval,
+                "full_update_day": full_update_day,
+                "full_update_hour": full_update_hour,
             }
 
             return self.async_create_entry(
@@ -355,22 +359,45 @@ class GTFSPerformantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         else:
             ungrouped_list = "None (all stops are grouped)"
 
-        # Show summary with update interval selector
+        # Show summary with update interval selectors
         return self.async_show_form(
             step_id="final_processing",
             data_schema=vol.Schema({
                 vol.Required("update_interval", default="120"): SelectSelector(
                     SelectSelectorConfig(
                         options=[
-                            {"value": "15", "label": "15 seconds (fastest)"},
                             {"value": "30", "label": "30 seconds"},
                             {"value": "60", "label": "1 minute"},
                             {"value": "120", "label": "2 minutes (recommended)"},
-                            {"value": "300", "label": "5 minutes (lowest load)"},
+                            {"value": "300", "label": "5 minutes"},
+                            {"value": "600", "label": "10 minutes"},
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )
-                )
+                ),
+                vol.Required("full_update_day", default="1"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            {"value": "1", "label": "1st of month"},
+                            {"value": "15", "label": "15th of month"},
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required("full_update_hour", default="4"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            {"value": "0", "label": "Midnight (0:00)"},
+                            {"value": "1", "label": "1 AM"},
+                            {"value": "2", "label": "2 AM"},
+                            {"value": "3", "label": "3 AM"},
+                            {"value": "4", "label": "4 AM (recommended)"},
+                            {"value": "5", "label": "5 AM"},
+                            {"value": "6", "label": "6 AM"},
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
             }),
             description_placeholders={
                 "name": self.gtfs_data["name"],

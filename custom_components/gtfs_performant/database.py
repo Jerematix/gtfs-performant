@@ -178,6 +178,15 @@ class GTFSDatabase:
                 end_date TEXT
             )
         """)
+
+        await cursor.execute("""
+            CREATE TABLE IF NOT EXISTS calendar_dates (
+                service_id TEXT NOT NULL,
+                date TEXT NOT NULL,
+                exception_type INTEGER NOT NULL,
+                PRIMARY KEY (service_id, date)
+            )
+        """)
         
         await cursor.execute("""
             CREATE TABLE IF NOT EXISTS realtime_updates (
@@ -223,6 +232,8 @@ class GTFSDatabase:
             "CREATE INDEX IF NOT EXISTS idx_stop_times_stop ON stop_times(stop_id)",
             "CREATE INDEX IF NOT EXISTS idx_realtime_trip_stop ON realtime_updates(trip_id, stop_id)",
             "CREATE INDEX IF NOT EXISTS idx_realtime_timestamp ON realtime_updates(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_calendar_dates_date ON calendar_dates(date)",
+            "CREATE INDEX IF NOT EXISTS idx_calendar_dates_service ON calendar_dates(service_id)",
         ]
         
         for index_sql in indexes:
@@ -313,7 +324,10 @@ class GTFSDatabase:
         return [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
 
     async def get_scheduled_departures(self, stop_id: str, limit: int = 10) -> list[dict]:
-        """Get upcoming scheduled departures for a stop - timezone aware."""
+        """Get upcoming scheduled departures for a stop - timezone aware.
+
+        Handles GTFS service days that extend past midnight (times 24:00-28:00).
+        """
         cursor = await self._connection.cursor()
 
         # Get agency timezone from database
@@ -339,42 +353,128 @@ class GTFSDatabase:
         weekday = now.strftime("%A").lower()  # monday, tuesday, etc.
         today_date = now.strftime("%Y%m%d")
 
-        _LOGGER.debug("Querying departures for stop=%s at %s (tz=%s)", stop_id, current_time, agency_tz or "system")
+        # Calculate yesterday's info for past-midnight service day handling
+        yesterday = now - timedelta(days=1)
+        yesterday_weekday = yesterday.strftime("%A").lower()
+        yesterday_date = yesterday.strftime("%Y%m%d")
 
-        # Query scheduled departures for today
-        # trip_headsign is populated with final stop name during GTFS import if not provided
+        # Convert current time to "GTFS yesterday" format (add 24 hours)
+        # e.g., 00:53:00 becomes 24:53:00 for matching yesterday's service
+        hours, mins, secs = map(int, current_time.split(':'))
+        current_time_as_yesterday = f"{hours + 24:02d}:{mins:02d}:{secs:02d}"
+
+        _LOGGER.debug("Querying departures for stop=%s at %s (tz=%s), also checking yesterday's service >= %s",
+                     stop_id, current_time, agency_tz or "system", current_time_as_yesterday)
+
+        # Query scheduled departures combining:
+        # 1. Today's services with normal times (>= current_time)
+        # 2. Yesterday's services that extend past midnight (times 24:00-28:00 >= current_time + 24h)
+        # We use UNION to combine both queries cleanly
+        #
+        # Service runs if:
+        # - calendar_dates says exception_type=1 for this date (service explicitly added)
+        # - OR (calendar says weekday=1 AND date in range) AND NOT (calendar_dates says exception_type=2)
+        # - OR no calendar info exists (fallback for feeds without calendar data)
         await cursor.execute(f"""
-            SELECT DISTINCT
-                st.trip_id,
-                r.route_id,
-                r.route_short_name,
-                r.route_long_name,
-                r.route_color,
-                COALESCE(
-                    NULLIF(st.stop_headsign, ''),
-                    NULLIF(t.trip_headsign, ''),
-                    NULLIF(r.route_long_name, '')
-                ) as trip_headsign,
-                t.direction_id,
-                st.departure_time as scheduled_arrival,
-                st.departure_time as scheduled_departure,
-                COALESCE(rt.arrival_delay, 0) as arrival_delay,
-                rt.vehicle_id
-            FROM stop_times st
-            JOIN trips t ON st.trip_id = t.trip_id
-            JOIN routes r ON t.route_id = r.route_id
-            LEFT JOIN calendar c ON t.service_id = c.service_id
-            LEFT JOIN realtime_updates rt ON st.trip_id = rt.trip_id AND st.stop_id = rt.stop_id
-            WHERE st.stop_id = ?
-            AND st.departure_time >= ?
-            AND st.departure_time < '28:00:00'
-            AND (c.service_id IS NULL OR (c.{weekday} = 1 AND c.start_date <= ? AND c.end_date >= ?))
-            ORDER BY st.departure_time ASC
+            SELECT * FROM (
+                -- Today's services (both normal and past-midnight times)
+                SELECT DISTINCT
+                    st.trip_id,
+                    r.route_id,
+                    r.route_short_name,
+                    r.route_long_name,
+                    r.route_color,
+                    COALESCE(
+                        NULLIF(st.stop_headsign, ''),
+                        NULLIF(t.trip_headsign, ''),
+                        NULLIF(r.route_long_name, '')
+                    ) as trip_headsign,
+                    t.direction_id,
+                    st.departure_time as scheduled_arrival,
+                    st.departure_time as scheduled_departure,
+                    COALESCE(rt.arrival_delay, 0) as arrival_delay,
+                    rt.vehicle_id,
+                    st.departure_time as sort_time,
+                    0 as is_yesterday_service
+                FROM stop_times st
+                JOIN trips t ON st.trip_id = t.trip_id
+                JOIN routes r ON t.route_id = r.route_id
+                LEFT JOIN calendar c ON t.service_id = c.service_id
+                LEFT JOIN calendar_dates cd_add ON t.service_id = cd_add.service_id AND cd_add.date = ? AND cd_add.exception_type = 1
+                LEFT JOIN calendar_dates cd_remove ON t.service_id = cd_remove.service_id AND cd_remove.date = ? AND cd_remove.exception_type = 2
+                LEFT JOIN realtime_updates rt ON st.trip_id = rt.trip_id AND st.stop_id = rt.stop_id
+                WHERE st.stop_id = ?
+                AND st.departure_time >= ?
+                AND st.departure_time < '28:00:00'
+                AND cd_remove.service_id IS NULL  -- Not explicitly removed
+                AND (
+                    cd_add.service_id IS NOT NULL  -- Explicitly added via calendar_dates
+                    OR (c.{weekday} = 1 AND c.start_date <= ? AND c.end_date >= ?)  -- Regular calendar pattern
+                    OR (c.service_id IS NULL AND cd_add.service_id IS NULL AND NOT EXISTS (SELECT 1 FROM calendar LIMIT 1))  -- No calendar data at all
+                )
+
+                UNION
+
+                -- Yesterday's services extending past midnight (times 24:00+)
+                SELECT DISTINCT
+                    st.trip_id,
+                    r.route_id,
+                    r.route_short_name,
+                    r.route_long_name,
+                    r.route_color,
+                    COALESCE(
+                        NULLIF(st.stop_headsign, ''),
+                        NULLIF(t.trip_headsign, ''),
+                        NULLIF(r.route_long_name, '')
+                    ) as trip_headsign,
+                    t.direction_id,
+                    st.departure_time as scheduled_arrival,
+                    st.departure_time as scheduled_departure,
+                    COALESCE(rt.arrival_delay, 0) as arrival_delay,
+                    rt.vehicle_id,
+                    -- Convert 24:xx to 00:xx for proper sorting against today's times
+                    substr('0' || (CAST(substr(st.departure_time, 1, 2) AS INTEGER) - 24), -2) || substr(st.departure_time, 3) as sort_time,
+                    1 as is_yesterday_service
+                FROM stop_times st
+                JOIN trips t ON st.trip_id = t.trip_id
+                JOIN routes r ON t.route_id = r.route_id
+                LEFT JOIN calendar c ON t.service_id = c.service_id
+                LEFT JOIN calendar_dates cd_add ON t.service_id = cd_add.service_id AND cd_add.date = ? AND cd_add.exception_type = 1
+                LEFT JOIN calendar_dates cd_remove ON t.service_id = cd_remove.service_id AND cd_remove.date = ? AND cd_remove.exception_type = 2
+                LEFT JOIN realtime_updates rt ON st.trip_id = rt.trip_id AND st.stop_id = rt.stop_id
+                WHERE st.stop_id = ?
+                AND st.departure_time >= ?
+                AND st.departure_time < '28:00:00'
+                AND cd_remove.service_id IS NULL  -- Not explicitly removed
+                AND (
+                    cd_add.service_id IS NOT NULL  -- Explicitly added via calendar_dates
+                    OR (c.{yesterday_weekday} = 1 AND c.start_date <= ? AND c.end_date >= ?)  -- Regular calendar pattern
+                    OR (c.service_id IS NULL AND cd_add.service_id IS NULL AND NOT EXISTS (SELECT 1 FROM calendar LIMIT 1))  -- No calendar data at all
+                )
+            )
+            ORDER BY sort_time ASC
             LIMIT ?
-        """, (stop_id, current_time, today_date, today_date, limit))
+        """, (today_date, today_date, stop_id, current_time, today_date, today_date,
+              yesterday_date, yesterday_date, stop_id, current_time_as_yesterday, yesterday_date, yesterday_date, limit))
 
         rows = await cursor.fetchall()
-        return [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
+        results = [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
+
+        # Convert past-midnight times (24:xx, 25:xx) to normal format for display
+        # ONLY for yesterday's services (is_yesterday_service = 1)
+        # Today's services with times >= 24:00 mean tomorrow, so keep them as-is for sensor.py
+        for result in results:
+            scheduled = result.get('scheduled_arrival', '')
+            is_yesterday = result.get('is_yesterday_service', 0)
+            if scheduled and scheduled >= '24:00:00' and is_yesterday:
+                hours = int(scheduled[:2]) - 24
+                result['scheduled_arrival'] = f"{hours:02d}{scheduled[2:]}"
+                result['scheduled_departure'] = f"{hours:02d}{scheduled[2:]}"
+
+        # Re-sort by the converted times
+        results.sort(key=lambda x: x.get('sort_time', '99:99:99'))
+
+        return results[:limit]
 
     async def get_departures(self, stop_ids: list[str], limit: int = 10) -> list[dict]:
         """Get departures for multiple stops, sorted by time."""

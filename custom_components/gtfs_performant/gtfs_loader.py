@@ -83,6 +83,7 @@ class GTFSLoader:
         await cursor.execute("DELETE FROM routes")
         await cursor.execute("DELETE FROM stops")
         await cursor.execute("DELETE FROM calendar")
+        await cursor.execute("DELETE FROM calendar_dates")
         await cursor.execute("DELETE FROM agency")
         await cursor.execute("DELETE FROM realtime_updates")
         await self.database._connection.commit()
@@ -164,6 +165,7 @@ class GTFSLoader:
         await self._load_agency_streaming()
         await self._load_stops_streaming()
         await self._load_calendar_streaming()
+        await self._load_calendar_dates_streaming()
         await self._load_routes_streaming()
         await self._load_trips_streaming()
         await self._load_stop_times_streaming()
@@ -264,7 +266,43 @@ class GTFSLoader:
             _LOGGER.info("Loaded calendar entries")
 
         except Exception as e:
-            _LOGGER.warning("Could not load calendar: %s", e)
+            _LOGGER.warning("Could not load calendar.txt: %s (this is OK if calendar_dates.txt is used)", e)
+
+    async def _load_calendar_dates_streaming(self) -> None:
+        """Stream and load all calendar_dates entries (service exceptions).
+
+        Many German transit agencies use calendar_dates.txt exclusively instead of calendar.txt.
+        exception_type: 1 = service added, 2 = service removed
+        """
+        if not self._gtfs_data:
+            return
+
+        self._gtfs_data.seek(0)
+        batch = []
+        count = 0
+
+        try:
+            with zipfile.ZipFile(self._gtfs_data) as zf:
+                with zf.open('calendar_dates.txt') as f:
+                    reader = csv.DictReader(StringIO(f.read().decode('utf-8-sig')))
+                    for row in reader:
+                        batch.append(row)
+                        count += 1
+                        if len(batch) >= 1000:
+                            await self._batch_insert('calendar_dates',
+                                ['service_id', 'date', 'exception_type'], batch)
+                            batch = []
+
+                    if batch:
+                        await self._batch_insert('calendar_dates',
+                            ['service_id', 'date', 'exception_type'], batch)
+
+            _LOGGER.info("Loaded %d calendar_dates entries", count)
+
+        except KeyError:
+            _LOGGER.debug("No calendar_dates.txt found (using calendar.txt only)")
+        except Exception as e:
+            _LOGGER.warning("Could not load calendar_dates.txt: %s", e)
 
     async def _load_routes_streaming(self) -> None:
         """Stream routes.txt and load only routes that serve our stops."""

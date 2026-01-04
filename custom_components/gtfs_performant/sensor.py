@@ -163,8 +163,7 @@ class GTFSDepartureSensor(CoordinatorEntity, SensorEntity):
 
                 # Handle times after midnight (GTFS times can go to 28:00:00)
                 if hours >= 24:
-                    from datetime import timedelta
-                    scheduled = scheduled.replace(day=scheduled.day) + timedelta(days=1)
+                    scheduled = scheduled + timedelta(days=1)
                     scheduled = scheduled.replace(hour=hours - 24)
 
                 expected = scheduled + timedelta(seconds=delay)
